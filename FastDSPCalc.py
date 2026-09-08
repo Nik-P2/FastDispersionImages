@@ -45,7 +45,10 @@ def sigma_calc(patch, phase_vels, freqs):
     spec = re_patch.dft(dim="time")
 
     # window to the specific frequencies of interest
-    sub_spec = spec.select(frequency = (freqs[0], freqs[-1]))
+    spec_sel = spec.select(ft_time = (freqs[0], freqs[-1]))
+
+    # change data format to float to avoid data format error
+    sub_spec = spec_sel.update(data = spec_sel.data.astype(np.float64))
 
     # apply the phase shift by looping through each individual trace
     for i in range(len(sub_spec.data)):
@@ -90,7 +93,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, freqs, sigma):
     phaseShiftMat = np.exp(-2*np.pi*1j*np.outer(p, freqs)) #phase shift matrix with dimensions the same as sigma and the final dispersion image
 
     # dispersion calc by multiplying the data spectrum by the phase shifts
-    dsp = np.tile(np.conj(sub_spec_r),(nVel,1))*np.power(phaseShiftMat,trace_pos)*sigma
+    dsp = np.abs(np.tile(np.conj(sub_spec_r),(nVel,1))*np.power(phaseShiftMat,trace_pos)*sigma)
 
     return dsp
 
@@ -131,7 +134,7 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
     dist_arr = patch.coords.get_array('distance')
 
     # for each virtual source do a dispersion calculation using sigma_factor
-    if supergather == True:
+    if supergather == True and not isinstance(r_primes, int):# if multiple virtual sources are input and we want a supergather
         dsp_stack = np.zeros((len(phase_vels), len(freqs)))# set up dsp_stack as an empty array
 
         for i in range(len(r_primes)):# loop through r_primes
@@ -140,7 +143,14 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
 
         return dsp_stack
 
-    else:
+    elif isinstance(r_primes, int):# if only one virtual source is input
+        dsp_stack = np.zeros((len(phase_vels), len(freqs)))# set up dsp_stack as an empty array
+        source_index = np.argmin(np.abs(dist_arr - r_primes))# convert from r_primes to an index location in the data, via minimum difference
+        dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor)
+
+        return dsp_stack
+
+    else:# if we want multiple virtual sources that are separate
         dsp_stack_list = []# set up dsp_stack_list as an empty list
 
         for i in range(len(r_primes)):
@@ -161,4 +171,13 @@ include an optional input for dsp_stack_calc where user inputs an array of virtu
 
 '''
 recalculating the spectrum might be necessary if the time windows we work with are too large 
+'''
+
+'''
+time optimizations
+-use broadcasting to get rid of loop in sigma_calc
+-when calculating phaseShiftMat use broadcasting to get rid of the expensive np.outer calc
+-precompute phaseShiftMat so it's not done every single call of dsp_calc
+-in dsp_calc use broadcasting to get around the use of np.tile
+-
 '''
