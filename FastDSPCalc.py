@@ -49,7 +49,7 @@ def sigma_calc(patch, phase_vels, freqs):
 
     # apply the phase shift by looping through each individual trace
     for i in range(len(sub_spec.data)):
-        # isolate a single traces spectrum
+        # isolate a single traces spectrum 
         spec_trace = sub_spec.data[i,:]
 
         sigma = sigma + np.tile(spec_trace, (nVel,1)) * np.power(phaseShiftMat, sub_spec.coords.get_array("distance")[i])
@@ -94,7 +94,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, freqs, sigma):
 
     return dsp
 
-def dsp_stack_calc(patch, phase_vels, freqs):
+def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
     """
     calculates dispersion images for all possible virtual sources in a patch
     Parameters
@@ -108,23 +108,46 @@ def dsp_stack_calc(patch, phase_vels, freqs):
     freqs: 1D array
         array containing all the frequencies to construct a dispersion image for
 
+    r_primes: 1D array or an Int
+        an Int or array that holds the virtual source locations in meters
+
+    supergather: Boolean
+        if True, stack all dispersions across all virtual sources together
+        if False, place each separate dispersion in an array, 
+
     Returns
     -------
     dsp_stack: 2D array
         stacked dispersion image over all virtual sources
+
+    dsp_stack_list: list of 2D arrays
+            dispersion images for each virtual source in an order list
     """
 
     # calculate the sigma factor for this patch
     sigma_factor, sub_spec = sigma_calc(patch, phase_vels, freqs)
 
-    # set up stacked dsp array
-    dsp_stack = np.zeros((len(phase_vels), len(freqs)))
+    # extract array of al distance positions from patch
+    dist_arr = patch.coords.get_array('distance')
 
     # for each virtual source do a dispersion calculation using sigma_factor
-    for i in range(len(sub_spec.data)):
-        dsp_stack += dsp_calc(sub_spec.data[i,:], sub_spec.coords.get_array("distance")[i], phase_vels, freqs, sigma_factor)
+    if supergather == True:
+        dsp_stack = np.zeros((len(phase_vels), len(freqs)))# set up dsp_stack as an empty array
 
-    return dsp_stack
+        for i in range(len(r_primes)):# loop through r_primes
+            source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
+            dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor)
+
+        return dsp_stack
+
+    else:
+        dsp_stack_list = []# set up dsp_stack_list as an empty list
+
+        for i in range(len(r_primes)):
+            source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
+            dsp_stack_list.append(dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor))
+
+        return dsp_stack_list
 
 
 '''
@@ -134,4 +157,8 @@ be particularly large?
 
 
 include an optional input for dsp_stack_calc where user inputs an array of virtual source locations and we only iterate through those?
+'''
+
+'''
+recalculating the spectrum might be necessary if the time windows we work with are too large 
 '''
