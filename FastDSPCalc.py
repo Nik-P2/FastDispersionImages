@@ -17,27 +17,19 @@ def sigma_calc(patch, phase_vels, freqs):
     phase_vels: 1D array
         array containing all the phase velocities to construct a dispersion image for
 
-    freqs: 1D array
-        array containing all the frequencies to construct a dispersion image for
+    freqs: 1D array, tuple
+        array containing the start and end frequency to construct a dispersion image for
     
     Returns
     -------
     sigma: 2D array with dimensions of len(phase_vels)*len(freqs)
     """
 
-    # define the dimension of sigma
-    nVel = len(phase_vels)
-    nFreq = len(freqs)
-
-    # initialize sigma as a 2D array filled with zeros
-    sigma = np.zeros((nVel, nFreq))
-
     # don't need to calc frequencies of interest since that is already a user input
 
-    # define the phase shift matrix
+    # slowness
     p = 1.0/phase_vels # convert from velocity to slowness
-    phaseShiftMat = np.exp(2*np.pi*1j*np.outer(p, freqs)) #phase shift matrix with dimensions the same as sigma and the final dispersion image
-
+    
     # reshape patch to ensure we access the trace axis
     re_patch = patch.transpose("distance", "time")
 
@@ -47,21 +39,23 @@ def sigma_calc(patch, phase_vels, freqs):
     # window to the specific frequencies of interest
     spec_sel = spec.select(ft_time = (freqs[0], freqs[-1]))
 
-    # change data format to float to avoid data format error
-    sub_spec = spec_sel.update(data = spec_sel.data.astype(np.float64))
+    pa_freq = spec_sel.coords.get_array("ft_time")
+    pa_dist = spec_sel.coords.get_array("distance")
 
-    # apply the phase shift by looping through each individual trace
-    for i in range(len(sub_spec.data)):
-        # isolate a single traces spectrum 
-        spec_trace = sub_spec.data[i,:]
+    # calculate the phase shift matrix, has shape of (nVel, nFreq, nDistance)
+    phaseShiftMat = np.exp(2j * np.pi * p[:, None, None] * pa_freq[None, :, None] * pa_dist[None, None, :])
 
-        sigma = sigma + np.tile(spec_trace, (nVel,1)) * np.power(phaseShiftMat, sub_spec.coords.get_array("distance")[i])
+    # has shape of (nFreq, nDistance)
+    spectrum = (spec_sel.data).T
 
-    return sigma, sub_spec
+    # has shape of (nVel, nFreq)
+    sigma = np.sum(phaseShiftMat * spectrum[None, :, :], axis = 2)
 
-def dsp_calc(sub_spec_r, trace_pos, phase_vels, freqs, sigma):
+    return sigma, spec_sel
+
+def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     """
-    calculates a dispersion image for a singular virtual source using 
+    calculates a dispersion image for a singular virtual source using a precomputed sigma
     Parameters
     ----------
     sub_spec_r: 1D array
@@ -73,7 +67,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, freqs, sigma):
     phase_vels: 1D array
         array containing all the phase velocities to construct a dispersion image for
     
-    freqs: 1D array
+    pa_freqs: 1D array
         array containing all the frequencies to construct a dispersion image for
     
     sigma: 2D array
@@ -84,18 +78,20 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, freqs, sigma):
         dispersion image of the data
     """
 
-    # define dimensions for spectrum
-    nVel = len(phase_vels)
-    nFreq = len(freqs)
-
     # define the phase shift matrix
     p = 1.0/phase_vels # convert from velocity to slowness
-    phaseShiftMat = np.exp(-2*np.pi*1j*np.outer(p, freqs)) #phase shift matrix with dimensions the same as sigma and the final dispersion image
+
+    phaseShiftMat = np.exp(-2j * np.pi * p[:, None] * pa_freq[None, :] * trace_pos) #phase shift matrix with dimensions the same as sigma and the final dispersion image
 
     # dispersion calc by multiplying the data spectrum by the phase shifts
-    dsp = np.abs(np.tile(np.conj(sub_spec_r),(nVel,1))*np.power(phaseShiftMat,trace_pos)*sigma)
+    dsp = np.abs(np.conj(sub_spec_r)[None, :] * phaseShiftMat * sigma)
 
-    return dsp
+    # convert dsp into a dascore Patch, similar to the dispersion_phaseshift function
+    attrs = dict(category = "DAS")
+    coords = dict(velocity=phase_vels, frequency = pa_freq)
+    dsp_patch = dc.Patch(data = dsp, coords = coords, attrs = attrs, dims=["velocity", "frequency"])
+
+    return dsp_patch.set_units(velocity="m/s", frequency="Hz")
 
 def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
     """
@@ -131,22 +127,23 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
     sigma_factor, sub_spec = sigma_calc(patch, phase_vels, freqs)
 
     # extract array of al distance positions from patch
-    dist_arr = patch.coords.get_array('distance')
+    dist_arr = patch.coords.get_array("distance")
+    pa_freq = sub_spec.coords.get_array("ft_time")
 
     # for each virtual source do a dispersion calculation using sigma_factor
     if supergather == True and not isinstance(r_primes, int):# if multiple virtual sources are input and we want a supergather
-        dsp_stack = np.zeros((len(phase_vels), len(freqs)))# set up dsp_stack as an empty array
+        dsp_stack = 0# set up dsp_stack as an empty variable
 
         for i in range(len(r_primes)):# loop through r_primes
             source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
-            dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor)
+            dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
 
         return dsp_stack
 
     elif isinstance(r_primes, int):# if only one virtual source is input
-        dsp_stack = np.zeros((len(phase_vels), len(freqs)))# set up dsp_stack as an empty array
+        dsp_stack = 0# set up dsp_stack as an empty variable
         source_index = np.argmin(np.abs(dist_arr - r_primes))# convert from r_primes to an index location in the data, via minimum difference
-        dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor)
+        dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
 
         return dsp_stack
 
@@ -155,7 +152,7 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
 
         for i in range(len(r_primes)):
             source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
-            dsp_stack_list.append(dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, freqs, sigma_factor))
+            dsp_stack_list.append(dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor))
 
         return dsp_stack_list
 
@@ -175,9 +172,9 @@ recalculating the spectrum might be necessary if the time windows we work with a
 
 '''
 time optimizations
--use broadcasting to get rid of loop in sigma_calc
--when calculating phaseShiftMat use broadcasting to get rid of the expensive np.outer calc
+-use broadcasting to get rid of loop in sigma_calc ***Done***
+-when calculating phaseShiftMat use broadcasting to get rid of the expensive np.outer calc ***Done***
 -precompute phaseShiftMat so it's not done every single call of dsp_calc
--in dsp_calc use broadcasting to get around the use of np.tile
+-in dsp_calc use broadcasting to get around the use of np.tile ***Done***
 -
 '''
