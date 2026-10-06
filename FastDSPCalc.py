@@ -30,8 +30,8 @@ def sigma_calc(patch, phase_vels, freqs):
     # slowness
     p = 1.0/phase_vels # convert from velocity to slowness
     
-    # reshape patch to ensure we access the trace axis
-    re_patch = patch.transpose("distance", "time")
+    # reshape patch to ensure we access the proper axis
+    re_patch = patch.transpose("time", "distance")
 
     # calculate the spectrum of each trace
     spec = re_patch.dft(dim="time")
@@ -39,14 +39,15 @@ def sigma_calc(patch, phase_vels, freqs):
     # window to the specific frequencies of interest
     spec_sel = spec.select(ft_time = (freqs[0], freqs[-1]))
 
-    pa_freq = spec_sel.coords.get_array("ft_time")
+    # make freqency and distance arrays
+    pa_freq = spec_sel.coords.get_array("ft_time") 
     pa_dist = spec_sel.coords.get_array("distance")
 
     # calculate the phase shift matrix, has shape of (nVel, nFreq, nDistance)
     phaseShiftMat = np.exp(2j * np.pi * p[:, None, None] * pa_freq[None, :, None] * pa_dist[None, None, :])
 
     # has shape of (nFreq, nDistance)
-    spectrum = (spec_sel.data).T
+    spectrum = (spec_sel.data)
 
     # has shape of (nVel, nFreq)
     sigma = np.sum(phaseShiftMat * spectrum[None, :, :], axis = 2)
@@ -67,7 +68,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     phase_vels: 1D array
         array containing all the phase velocities to construct a dispersion image for
     
-    pa_freqs: 1D array
+    pa_freq: 1D array
         array containing all the frequencies to construct a dispersion image for
     
     sigma: 2D array
@@ -136,14 +137,14 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
 
         for i in range(len(r_primes)):# loop through r_primes
             source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
-            dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
+            dsp_stack += dsp_calc(sub_spec.data[:, source_index], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
 
         return dsp_stack
 
     elif isinstance(r_primes, int):# if only one virtual source is input
         dsp_stack = 0# set up dsp_stack as an empty variable
         source_index = np.argmin(np.abs(dist_arr - r_primes))# convert from r_primes to an index location in the data, via minimum difference
-        dsp_stack += dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
+        dsp_stack += dsp_calc(sub_spec.data[:, source_index], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor)
 
         return dsp_stack
 
@@ -152,29 +153,6 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes, supergather):
 
         for i in range(len(r_primes)):
             source_index = np.argmin(np.abs(dist_arr - r_primes[i]))# convert from r_primes to an index location in the data, via minimum difference
-            dsp_stack_list.append(dsp_calc(sub_spec.data[source_index,:], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor))
+            dsp_stack_list.append(dsp_calc(sub_spec.data[:, source_index], sub_spec.coords.get_array("distance")[source_index], phase_vels, pa_freq, sigma_factor))
 
         return dsp_stack_list
-
-
-'''
-if im calling the above function through a function that gets looped through time, and sigma already calculates the spectrum
-then maybe I also include a return for the sub_spec patch so that the loop over virtual sources also has access to that data since it shouldn't
-be particularly large?
-
-
-include an optional input for dsp_stack_calc where user inputs an array of virtual source locations and we only iterate through those?
-'''
-
-'''
-recalculating the spectrum might be necessary if the time windows we work with are too large 
-'''
-
-'''
-time optimizations
--use broadcasting to get rid of loop in sigma_calc ***Done***
--when calculating phaseShiftMat use broadcasting to get rid of the expensive np.outer calc ***Done***
--precompute phaseShiftMat so it's not done every single call of dsp_calc
--in dsp_calc use broadcasting to get around the use of np.tile ***Done***
--
-'''
