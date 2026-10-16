@@ -73,6 +73,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     
     sigma: 2D array
         array containing the precomputed sigma values for every trace in the patch   
+
     Returns
     -------
     dsp: 2D array
@@ -85,7 +86,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     phaseShiftMat = np.exp(-2j * np.pi * p[:, None] * pa_freq[None, :] * trace_pos) #phase shift matrix with dimensions the same as sigma and the final dispersion image
 
     # dispersion calc by multiplying the data spectrum by the phase shifts
-    dsp = np.abs(np.conj(sub_spec_r)[None, :] * phaseShiftMat * sigma)
+    dsp = np.conj(sub_spec_r)[None, :] * phaseShiftMat * sigma
 
     # convert dsp into a dascore Patch, similar to the dispersion_phaseshift function
     attrs = dict(category = "DAS")
