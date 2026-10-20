@@ -6,7 +6,7 @@ import numpy as np
 import scipy
 import dascore as dc
 
-def sigma_calc(patch, phase_vels, freqs):
+def sigma_calc(patch, phase_vels, approx_resolution = None, approx_freqs=None):
     """
     calculates the sigma factor defined in page 85 of Dr. Eileen Martin's PhD dissertation
     Parameters
@@ -17,7 +17,10 @@ def sigma_calc(patch, phase_vels, freqs):
     phase_vels: 1D array
         array containing all the phase velocities to construct a dispersion image for
 
-    freqs: 1D array, tuple
+    approx_resolution: Float
+        desired frequency resolution
+        
+    approx_freqs: 1D array: tuple
         array containing the start and end frequency to construct a dispersion image for
     
     Returns
@@ -25,43 +28,80 @@ def sigma_calc(patch, phase_vels, freqs):
     sigma: 2D array with dimensions of len(phase_vels)*len(freqs)
     """
 
-    # don't need to calc frequencies of interest since that is already a user input
-
     # slowness
     p = 1.0/phase_vels # convert from velocity to slowness
     
     # reshape patch to ensure we access the proper axis
     re_patch = patch.transpose("time", "distance")
 
-    # calculate the spectrum of each trace
-    spec = re_patch.dft(dim="time")
+    # extract data and coordinates
+    dat = re_patch.data
+    t_coord = re_patch.coords.get_array("time")
+    d_coord = re_patch.coords.get_array("distance")
 
-    # window to the specific frequencies of interest
-    pos_spec = spec.select(ft_time = (freqs[0], freqs[-1])) # positive spec
-    neg_spec = spec.select(ft_time = (-freqs[-1], -freqs[-0])) # negative spec
+    dt = float((t_coord[1]-t_coord[0])/np.timedelta64(1, "s"))
 
-    # get positive and negative frequency arrays
-    pos_freq = pos_spec.coords.get_array("ft_time") # coords for positive frequency metadata
-    neg_freq = neg_spec.coords.get_array("ft_time") # coords for negative frequency metadata
+    nt, n_dist = dat.shape
 
-    # make freqency and distance arrays
-    pa_freq = np.hstack((pos_freq, neg_freq)) # this should be something like 1, 2, 3, 4, 5, -5, -4, -3, -2, -1 
-    pa_dist = spec.coords.get_array("distance")
+    if dt <=0:
+        raise ValueError("Time sampling interval must be positive")
+
+    # determine nyquuist frequency to check inputs
+    fs = 1.0/dt
+    nyquist = fs/2.0
+
+    # determine fft length from approx_resolution
+    if approx_resolution is None:
+        n_fft = nt
+    else:
+        if approx_resolution <= 0:
+            raise ValueError("approx_resolution must be positive")
+        n_fft = max(1, int(round(fs/approx_resolution)))
+
+    # determine bounds for frequency calculation
+    if approx_freqs is None:
+        f_min = 0.0
+        f_max = nyquist
+    else:
+        f_min = approx_freqs[0]
+        f_max = approx_freqs[-1]
+
+        if f_min < 0 or f_max <= f_min:
+            raise ValueError("approx_freqs must contain an increasing, nonnegative frequency range")
+        if f_max > nyquist:
+            raise ValueError("Maximum frequency cannot exceed Nyquist: "+ str(nyquist))
+
+    # calculate fft along time axis
+    spec_data = np.fft.fft(dat, n=n_fft, axis = 0)
+
+    # calculate fft coords
+    freq_arr = np.fft.fftfreq(n_fft, d = dt)
+
+    pos_mask = ((freq_arr >= f_min) & (freq_arr <= f_max) & (freq_arr > 0)) # mask to select positive frequencies
+    neg_mask = ((freq_arr >= -f_min) & (freq_arr <= -f_max) & (freq_arr < 0)) # mask to select negative frequencies
+
+    pos_freq = freq_arr[pos_mask] # positve frequency vals
+    neg_freq = freq_arr[neg_mask] # negative frequency vals
+
+    # put positive and negative frequencies together
+    pa_freq = np.concatenate((pos_freq, neg_freq))
+
+    # isolate positive and negative fourier transforms
+    pos_spec = spec_data[pos_mask, :]
+    neg_spec = spec_data[neg_mask, :]
+
+    #combine fourier transforms together
+    pos_neg_spec = np.concatenate((pos_spec, neg_spec), axis = 0)
+
+    spec_patch = dc.Patch(data = pos_neg_spec, coords = {"ft_time" : pa_freq, "distance" : d_coord}, dims = ("ft_time", "distance"), attrs = re_patch.attrs)
 
     # calculate the phase shift matrix, has shape of (nVel, nFreq, nDistance)
-    phaseShiftMat = np.exp(2j * np.pi * p[:, None, None] * pa_freq[None, :, None] * pa_dist[None, None, :])
-
-    # has shape of (nFreq, nDistance)
-    # make concatenated spectrum data with shape of (2*nFreq, nDistance)
-    tempspool = dc.spool([pos_spec, neg_spec])
-    freq_concat = tempspool.concatenate(ft_time=None)
-
-    pos_neg_spec = freq_concat[0].data
+    phaseShiftMat = np.exp(2j * np.pi * p[:, None, None] * pa_freq[None, :, None] * d_coord[None, None, :])
 
     # has shape of (nVel, nFreq)
     sigma = np.sum(phaseShiftMat * pos_neg_spec[None, :, :], axis = 2)
 
-    return sigma, freq_concat[0], pa_freq
+    return sigma, spec_patch, pa_freq
 
 def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     """
@@ -100,7 +140,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
     # symmetrize the positive and negative frequencies in the dispersion image
     pos_freq = pa_freq[pa_freq > 0]
     neg_freq = pa_freq[pa_freq < 0]
-    dsp_sym = dsp[:, :len(pos_freq)] + np.fliplr(dsp[:, len(neg_freq):])
+    dsp_sym = dsp[:, :len(pos_freq)] + (dsp[:, len(neg_freq):])
 
     # convert dsp into a dascore Patch, similar to the dispersion_phaseshift function
     attrs = dict(category = "DAS")
@@ -109,7 +149,7 @@ def dsp_calc(sub_spec_r, trace_pos, phase_vels, pa_freq, sigma):
 
     return dsp_patch.set_units(velocity="m/s", frequency="Hz")
 
-def dsp_stack_calc(patch, phase_vels, freqs, r_primes):
+def dsp_stack_calc(patch, phase_vels, r_primes, approx_resolution = None, approx_freqs=None):
     """
     calculates dispersion images for all possible virtual sources in a patch
     Parameters
@@ -140,7 +180,7 @@ def dsp_stack_calc(patch, phase_vels, freqs, r_primes):
     r_primes_list = np.atleast_1d(r_primes)
 
     # calculate the sigma factor for this patch
-    sigma_factor, sub_spec, pa_freq = sigma_calc(patch, phase_vels, freqs)
+    sigma_factor, sub_spec, pa_freq = sigma_calc(patch, phase_vels, approx_resolution=approx_resolution, approx_freqs=approx_freqs)
 
     # extract array of al distance positions from patch
     dist_arr = patch.coords.get_array("distance")
