@@ -72,10 +72,10 @@ def sigma_calc(patch, phase_vels, approx_resolution = None, approx_freqs=None):
             raise ValueError("Maximum frequency cannot exceed Nyquist: "+ str(nyquist))
 
     # calculate fft along time axis
-    spec_data = np.fft.fft(dat, n=n_fft, axis = 0)
+    spec_data = scipy.fft.fft(dat, n=n_fft, axis = 0)
 
     # calculate fft coords
-    freq_arr = np.fft.fftfreq(n_fft, d = dt)
+    freq_arr = scipy.fft.fftfreq(n_fft, d = dt)
 
     pos_mask = ((freq_arr >= f_min) & (freq_arr <= f_max) & (freq_arr > 0)) # mask to select positive frequencies
     neg_mask = ((freq_arr >= -f_min) & (freq_arr <= -f_max) & (freq_arr < 0)) # mask to select negative frequencies
