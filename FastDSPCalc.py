@@ -72,7 +72,7 @@ def sigma_calc(patch, phase_vels, approx_resolution = None, approx_freqs=None):
             raise ValueError("Maximum frequency cannot exceed Nyquist: "+ str(nyquist))
 
     # calculate fft along time axis
-    spec_data = scipy.fft.fft(dat, n=n_fft, axis = 0)
+    spec_data = scipy.fft.fft(dat, n=n_fft, axis = 0).astype(np.complex64, copy=False)
 
     # calculate fft coords
     freq_arr = scipy.fft.fftfreq(n_fft, d = dt)
@@ -90,16 +90,20 @@ def sigma_calc(patch, phase_vels, approx_resolution = None, approx_freqs=None):
     pos_spec = spec_data[pos_mask, :]
     neg_spec = spec_data[neg_mask, :]
 
-    #combine fourier transforms together
+    # combine fourier transforms together
     pos_neg_spec = np.concatenate((pos_spec, neg_spec), axis = 0)
 
     spec_patch = dc.Patch(data = pos_neg_spec, coords = {"ft_time" : pa_freq, "distance" : d_coord}, dims = ("ft_time", "distance"), attrs = re_patch.attrs)
 
-    # calculate the phase shift matrix, has shape of (nVel, nFreq, nDistance)
-    phaseShiftMat = np.exp(2j * np.pi * p[:, None, None] * pa_freq[None, :, None] * d_coord[None, None, :])
+    # calculate sigma over chunked phase velocities to manage memory
+    sigma = np.empty((len(phase_vels), len(pa_freq)), dtype=np.complex64) #create empty array for sigma
 
-    # has shape of (nVel, nFreq)
-    sigma = np.sum(phaseShiftMat * pos_neg_spec[None, :, :], axis = 2)
+    chunk = 32 # chunk size is 32
+
+    for i0 in range(0, len(phase_vels), chunk): # loop through phasevels in chunks
+        i1 = min(i0 + chunk, len(phase_vels)) # determine end index for a chunk
+        phaseShiftMat = np.exp(2j*np.pi*p[i0:i1, None, None]*pa_freq[None,:, None]*d_coord[None, None, :]) # calculate phase shift for receivers
+        sigma[i0:i1] = np.einsum("vfd,fd->vf", phaseShiftMat, pos_neg_spec, optimize=True) # calculate a chunk of sigma
 
     return sigma, spec_patch, pa_freq
 
